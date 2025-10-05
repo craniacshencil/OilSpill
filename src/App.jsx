@@ -27,6 +27,14 @@ function App() {
     const handleFileSelect = (file) => {
         if (file && file.type.startsWith("image/")) {
             setSelectedFile(file);
+            // Revoke previous preview URL to avoid leaking blob URLs
+            if (previewUrl) {
+                try {
+                    URL.revokeObjectURL(previewUrl);
+                } catch (e) {
+                    // ignore
+                }
+            }
             setPreviewUrl(URL.createObjectURL(file));
             setResultImageUrl(null);
             setError(null);
@@ -153,7 +161,15 @@ function App() {
             // All endpoints now return images
             const blob = await response.blob();
             const imageUrl = URL.createObjectURL(blob);
-                setResultImageUrl(imageUrl);
+            // Revoke previous result URL if any
+            if (resultImageUrl) {
+                try {
+                    URL.revokeObjectURL(resultImageUrl);
+                } catch (e) {
+                    // ignore
+                }
+            }
+            setResultImageUrl(imageUrl);
         } catch (err) {
             setError(`Failed to process image: ${err.message}`);
             console.error("Processing error:", err);
