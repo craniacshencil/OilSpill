@@ -12,7 +12,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from inference_sdk import InferenceHTTPClient
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 
 @asynccontextmanager
@@ -46,6 +46,7 @@ cmap = mcolors.ListedColormap(scaled_color_map)
 
 unet_model = None
 deeplab_model = None
+sarvsdrone_model = None
 
 
 def load_models():
@@ -53,6 +54,14 @@ def load_models():
     try:
         unet_model = tf.keras.models.load_model("unet_model.h5", compile=False)
         deeplab_model = tf.keras.models.load_model("deeplab_model.h5", compile=False)
+        # Load SAR vs Drone classifier if available
+        try:
+            sarvsdrone_model = tf.keras.models.load_model(
+                "SARVersusDroneModel.h5", compile=False
+            )
+            globals()["sarvsdrone_model"] = sarvsdrone_model
+        except Exception:
+            print("SAR vs Drone model not found or failed to load")
     except Exception as e:
         print(f"Error loading models: {e}")
 
@@ -344,6 +353,82 @@ def draw_aerial_overlay_image(image_path: str, rf_result: dict) -> io.BytesIO:
     composited.convert("RGB").save(buf, format="PNG")
     buf.seek(0)
     return buf
+
+
+@app.post("/detect/sarvsdrone")
+async def detect_sar_vs_drone(file: UploadFile = File(...)):
+    """Detect whether an image is SAR (satellite SAR) or aerial/drone.
+
+    Returns JSON: { source: 'sar'|'aerial', confidence: float }
+    """
+    if not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File must be an image")
+
+    if globals().get("sarvsdrone_model") is None:
+        raise HTTPException(status_code=500, detail="SAR vs Drone model not loaded")
+
+    try:
+        # Read and preprocess similarly to the example script
+        image_bytes = await file.read()
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        # Resize/crop to 224x224 as the example script does
+        size = (224, 224)
+        try:
+            img = ImageOps.fit(img, size, Image.Resampling.LANCZOS)
+        except Exception:
+            # Pillow older versions
+            img = ImageOps.fit(img, size)
+
+        image_array = np.asarray(img).astype(np.float32)
+        # Normalize to [-1, 1]
+        normalized = (image_array / 127.5) - 1.0
+        input_tensor = np.expand_dims(normalized, axis=0)
+
+        pred = globals()["sarvsdrone_model"].predict(input_tensor)
+
+        # Interpret prediction: support sigmoid single-output or softmax two-output
+        source = "aerial"
+        confidence = 0.0
+        try:
+            pred = np.asarray(pred)
+            if pred.ndim == 2 and pred.shape[1] == 2:
+                # Softmax two-class
+                idx = int(np.argmax(pred[0]))
+                confidence = float(np.max(pred[0]))
+                # Allow configurable mapping via env var SARVSDRONE_SAR_INDEX
+                # This should be set to the class index (0 or 1) that corresponds to SAR
+                try:
+                    sar_index = int(os.getenv("SARVSDRONE_SAR_INDEX", "0"))
+                except Exception:
+                    sar_index = 0
+                source = "sar" if idx == sar_index else "aerial"
+            elif pred.ndim == 2 and pred.shape[1] == 1:
+                # Sigmoid single logit/probability
+                prob = float(pred[0][0])
+                # If model outputs logits, convert to probability via sigmoid
+                if prob < 0 or prob > 1:
+                    prob = 1.0 / (1.0 + np.exp(-prob))
+                confidence = prob
+                # Allow inverting sigmoid semantics via env var SARVSDRONE_SIGMOID_INVERT
+                invert_sig = os.getenv("SARVSDRONE_SIGMOID_INVERT", "0") in ("1", "true", "True", "yes", "y")
+                if invert_sig:
+                    source = "sar" if prob < 0.5 else "aerial"
+                else:
+                    source = "sar" if prob >= 0.5 else "aerial"
+            else:
+                # Fallback: flatten and pick max
+                flat = pred.flatten()
+                idx = int(np.argmax(flat))
+                confidence = float(flat[idx])
+                source = "sar" if idx == 1 else "aerial"
+        except Exception:
+            # On any interpretation error, fallback to aerial low confidence
+            source = "aerial"
+            confidence = 0.0
+
+        return {"source": source, "confidence": confidence}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/predict/aerial")
