@@ -16,22 +16,19 @@ function App() {
     const [resultImageUrl, setResultImageUrl] = useState(null);
     const [error, setError] = useState(null);
     const [dragActive, setDragActive] = useState(false);
-    const [selectedModel, setSelectedModel] = useState("unet");
+    const DEFAULT_MODEL = "unet";
     const [detectedSource, setDetectedSource] = useState(null); // 'sar' | 'aerial' | null
     const [detectionConfidence, setDetectionConfidence] = useState(null);
-    const [aerialJson, setAerialJson] = useState(null);
 
     // Refs for aerial overlay rendering (kept in case we want client-side later)
     const overlayContainerRef = useRef(null);
     const previewImgRef = useRef(null);
-    const overlayCanvasRef = useRef(null);
 
     const handleFileSelect = (file) => {
         if (file && file.type.startsWith("image/")) {
             setSelectedFile(file);
             setPreviewUrl(URL.createObjectURL(file));
             setResultImageUrl(null);
-            setAerialJson(null);
             setError(null);
             // reset auto-detection state
             setDetectedSource(null);
@@ -70,11 +67,11 @@ function App() {
             // Expecting shape: { source: 'sar'|'aerial', confidence: 0.0-1.0 }
             if (json && (json.source === "sar" || json.source === "aerial")) {
                 setDetectedSource(json.source);
-                setDetectionConfidence(
-                    typeof json.confidence === "number"
-                        ? json.confidence
-                        : null,
-                );
+                    setDetectionConfidence(
+                        typeof json.confidence === "number"
+                            ? json.confidence
+                            : null,
+                    );
                 // If SAR -> we want to call 'both' endpoint; if aerial -> 'aerial'
                 // We don't auto-start prediction here; user still clicks 'Detect Oil Spills'
             }
@@ -131,11 +128,11 @@ function App() {
                 endpoint = "aerial";
             } else {
                 endpoint =
-                    selectedModel === "both"
+                    DEFAULT_MODEL === "both"
                         ? "both"
-                        : selectedModel === "deeplab"
+                        : DEFAULT_MODEL === "deeplab"
                             ? "deeplab"
-                            : selectedModel === "aerial"
+                            : DEFAULT_MODEL === "aerial"
                                 ? "aerial"
                                 : "unet";
             }
@@ -156,8 +153,7 @@ function App() {
             // All endpoints now return images
             const blob = await response.blob();
             const imageUrl = URL.createObjectURL(blob);
-            setResultImageUrl(imageUrl);
-            setAerialJson(null);
+                setResultImageUrl(imageUrl);
         } catch (err) {
             setError(`Failed to process image: ${err.message}`);
             console.error("Processing error:", err);
@@ -182,45 +178,27 @@ function App() {
     // Compute a friendly label for the model(s) that produced the current result
     const getResultModelLabel = () => {
         // If detection decided, prefer that
-        if (detectedSource === "sar") return "UNet+DeepLabV3+";
+        if (detectedSource === "sar") return "UNet + DeepLabV3+";
         if (detectedSource === "aerial") return "Roboflow_Aerial";
 
-        // Otherwise use selectedModel
-        if (selectedModel === "both") return "UNet+DeepLabV3+";
-        if (selectedModel === "deeplab") return "DeepLabV3+";
-        if (selectedModel === "unet") return "UNet";
-        if (selectedModel === "aerial") return "Roboflow_Aerial";
-        return (selectedModel || "Model").toString();
+        // Otherwise use default model
+        if (DEFAULT_MODEL === "both") return "UNet + DeepLabV3+";
+        if (DEFAULT_MODEL === "deeplab") return "DeepLabV3+";
+        if (DEFAULT_MODEL === "unet") return "UNet";
+        if (DEFAULT_MODEL === "aerial") return "Roboflow_Aerial";
+        return (DEFAULT_MODEL || "Model").toString();
     };
 
     const resetUpload = () => {
         setSelectedFile(null);
         setPreviewUrl(null);
         setResultImageUrl(null);
-        setAerialJson(null);
         setError(null);
         // Clean up object URLs to prevent memory leaks
         if (previewUrl) URL.revokeObjectURL(previewUrl);
         if (resultImageUrl) URL.revokeObjectURL(resultImageUrl);
     };
-
-    // Retain no-op overlay effects (in case we switch back to JSON rendering)
-    const drawAerialOverlay = useCallback(() => { }, []);
-    useEffect(() => {
-        drawAerialOverlay();
-    }, [drawAerialOverlay, previewUrl]);
-    useEffect(() => {
-        const imgEl = previewImgRef.current;
-        if (!imgEl) return;
-        const handleLoad = () => drawAerialOverlay();
-        imgEl.addEventListener("load", handleLoad);
-        const handleResize = () => drawAerialOverlay();
-        window.addEventListener("resize", handleResize);
-        return () => {
-            imgEl.removeEventListener("load", handleLoad);
-            window.removeEventListener("resize", handleResize);
-        };
-    }, [drawAerialOverlay]);
+    
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-teal-50">
@@ -314,13 +292,7 @@ function App() {
                                             alt="Preview"
                                             className="absolute inset-0 w-full h-full object-contain rounded-xl border border-gray-200"
                                         />
-                                        {/* Keep overlay canvas hidden for now since backend returns images */}
-                                        {false && (
-                                            <canvas
-                                                ref={overlayCanvasRef}
-                                                className="absolute inset-0 w-full h-full pointer-events-none rounded-xl"
-                                            />
-                                        )}
+                                        {/* overlay canvas removed; backend returns images */}
                                         <button
                                             onClick={resetUpload}
                                             className="absolute top-3 right-3 p-2 bg-red-500 text-white rounded-full hover:bg-red-600 transition-colors"
@@ -510,11 +482,7 @@ function App() {
                                         <Loader className="h-8 w-8 text-blue-600 animate-spin" />
                                     </div>
                                     <p className="text-lg text-gray-700">
-                                        Processing your image with{" "}
-                                        {selectedModel === "both"
-                                            ? "both models"
-                                            : selectedModel}
-                                        ...
+                                        Processing your image with {getResultModelLabel()}...
                                     </p>
                                     <p className="text-sm text-gray-500 mt-2">
                                         This may take a few seconds
