@@ -17,6 +17,8 @@ function App() {
     const [error, setError] = useState(null);
     const [dragActive, setDragActive] = useState(false);
     const [selectedModel, setSelectedModel] = useState("unet");
+    const [detectedSource, setDetectedSource] = useState(null); // 'sar' | 'aerial' | null
+    const [detectionConfidence, setDetectionConfidence] = useState(null);
     const [aerialJson, setAerialJson] = useState(null);
 
     // Refs for aerial overlay rendering (kept in case we want client-side later)
@@ -31,8 +33,53 @@ function App() {
             setResultImageUrl(null);
             setAerialJson(null);
             setError(null);
+            // reset auto-detection state
+            setDetectedSource(null);
+            setDetectionConfidence(null);
+            // Kick off auto-detection
+            runAutoDetect(file);
         } else {
             setError("Please select a valid image file");
+        }
+    };
+
+    // Try to detect whether the image is SAR or Aerial using a backend endpoint
+    const runAutoDetect = async (file) => {
+        try {
+            const formData = new FormData();
+            formData.append("file", file);
+
+            // Attempt to call backend detect endpoint. If it doesn't exist, we'll silently skip.
+            const resp = await fetch(
+                `http://localhost:8000/detect/sarvsdrone`,
+                {
+                    method: "POST",
+                    body: formData,
+                },
+            );
+
+            if (!resp.ok) {
+                // Not available or error - leave detection as null
+                console.warn(
+                    "Auto-detect endpoint not available or returned error",
+                );
+                return;
+            }
+
+            const json = await resp.json();
+            // Expecting shape: { source: 'sar'|'aerial', confidence: 0.0-1.0 }
+            if (json && (json.source === "sar" || json.source === "aerial")) {
+                setDetectedSource(json.source);
+                setDetectionConfidence(
+                    typeof json.confidence === "number"
+                        ? json.confidence
+                        : null,
+                );
+                // If SAR -> we want to call 'both' endpoint; if aerial -> 'aerial'
+                // We don't auto-start prediction here; user still clicks 'Detect Oil Spills'
+            }
+        } catch (err) {
+            console.warn("Auto-detect failed:", err);
         }
     };
 
@@ -75,14 +122,23 @@ function App() {
             const formData = new FormData();
             formData.append("file", selectedFile);
 
-            const endpoint =
-                selectedModel === "both"
-                    ? "both"
-                    : selectedModel === "deeplab"
-                      ? "deeplab"
-                      : selectedModel === "aerial"
-                        ? "aerial"
-                        : "unet";
+            // If the detection said 'sar' route to 'both' (as requested),
+            // if 'aerial' route to 'aerial'. Otherwise use selectedModel mapping.
+            let endpoint = "unet";
+            if (detectedSource === "sar") {
+                endpoint = "both"; // run both models for SAR
+            } else if (detectedSource === "aerial") {
+                endpoint = "aerial";
+            } else {
+                endpoint =
+                    selectedModel === "both"
+                        ? "both"
+                        : selectedModel === "deeplab"
+                            ? "deeplab"
+                            : selectedModel === "aerial"
+                                ? "aerial"
+                                : "unet";
+            }
 
             const response = await fetch(
                 `http://localhost:8000/predict/${endpoint}`,
@@ -114,11 +170,27 @@ function App() {
         if (resultImageUrl) {
             const link = document.createElement("a");
             link.href = resultImageUrl;
-            link.download = `${selectedModel}_prediction.png`;
+            const modelLabel = getResultModelLabel();
+            const safeLabel = modelLabel.replace(/[^a-z0-9_-]/gi, "_");
+            link.download = `${safeLabel}_prediction.png`;
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
         }
+    };
+
+    // Compute a friendly label for the model(s) that produced the current result
+    const getResultModelLabel = () => {
+        // If detection decided, prefer that
+        if (detectedSource === "sar") return "UNet+DeepLabV3+";
+        if (detectedSource === "aerial") return "Roboflow_Aerial";
+
+        // Otherwise use selectedModel
+        if (selectedModel === "both") return "UNet+DeepLabV3+";
+        if (selectedModel === "deeplab") return "DeepLabV3+";
+        if (selectedModel === "unet") return "UNet";
+        if (selectedModel === "aerial") return "Roboflow_Aerial";
+        return (selectedModel || "Model").toString();
     };
 
     const resetUpload = () => {
@@ -133,7 +205,7 @@ function App() {
     };
 
     // Retain no-op overlay effects (in case we switch back to JSON rendering)
-    const drawAerialOverlay = useCallback(() => {}, []);
+    const drawAerialOverlay = useCallback(() => { }, []);
     useEffect(() => {
         drawAerialOverlay();
     }, [drawAerialOverlay, previewUrl]);
@@ -181,66 +253,26 @@ function App() {
                                 Upload Satellite Image
                             </h2>
 
-                            {/* Model Selection */}
+                            {/* Model Selection (automatic) */}
                             <div className="mb-6">
                                 <label className="block text-sm font-medium text-gray-700 mb-3">
-                                    Select AI Model
+                                    Model selection
                                 </label>
-                                <div className="grid grid-cols-4 gap-3">
-                                    <button
-                                        onClick={() => setSelectedModel("unet")}
-                                        className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-                                            selectedModel === "unet"
-                                                ? "bg-blue-600 text-white border-blue-600"
-                                                : "bg-white text-gray-700 border-gray-300 hover:border-blue-400"
-                                        }`}
-                                    >
-                                        UNet
-                                    </button>
-                                    <button
-                                        onClick={() =>
-                                            setSelectedModel("deeplab")
-                                        }
-                                        className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-                                            selectedModel === "deeplab"
-                                                ? "bg-blue-600 text-white border-blue-600"
-                                                : "bg-white text-gray-700 border-gray-300 hover:border-blue-400"
-                                        }`}
-                                    >
-                                        DeepLabV3+
-                                    </button>
-                                    <button
-                                        onClick={() => setSelectedModel("both")}
-                                        className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-                                            selectedModel === "both"
-                                                ? "bg-blue-600 text-white border-blue-600"
-                                                : "bg-white text-gray-700 border-gray-300 hover:border-blue-400"
-                                        }`}
-                                    >
-                                        Both Models
-                                    </button>
-                                    <button
-                                        onClick={() =>
-                                            setSelectedModel("aerial")
-                                        }
-                                        className={`p-3 rounded-lg border text-sm font-medium transition-all ${
-                                            selectedModel === "aerial"
-                                                ? "bg-blue-600 text-white border-blue-600"
-                                                : "bg-white text-gray-700 border-gray-300 hover:border-blue-400"
-                                        }`}
-                                    >
-                                        Aerial (Roboflow)
-                                    </button>
+                                <div className="rounded-lg p-4 bg-gray-50 border border-gray-200 text-sm text-gray-700">
+                                    Models are chosen automatically by the AI
+                                    based on the uploaded image (SAR images will
+                                    run both segmentation models; aerial images
+                                    use the Roboflow workflow). You can still
+                                    override the auto-detection below if needed.
                                 </div>
                             </div>
 
                             {/* File Upload Area */}
                             <div
-                                className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-all duration-300 ${
-                                    dragActive
+                                className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-all duration-300 ${dragActive
                                         ? "border-blue-400 bg-blue-50"
                                         : "border-gray-300 hover:border-blue-400 hover:bg-gray-50"
-                                }`}
+                                    }`}
                                 onDragEnter={handleDrag}
                                 onDragLeave={handleDrag}
                                 onDragOver={handleDrag}
@@ -322,6 +354,79 @@ function App() {
                                             Reset
                                         </button>
                                     </div>
+
+                                    {/* Auto-detection info and override */}
+                                    <div className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                                        <div className="flex items-center justify-between">
+                                            <div>
+                                                <p className="text-sm text-gray-600">
+                                                    Auto-detected source:
+                                                </p>
+                                                <p className="text-md font-medium text-gray-900">
+                                                    {detectedSource
+                                                        ? detectedSource.toUpperCase()
+                                                        : "Not detected"}
+                                                    {detectionConfidence !==
+                                                        null && (
+                                                            <span className="text-sm text-gray-500 ml-2">
+                                                                (
+                                                                {Math.round(
+                                                                    detectionConfidence *
+                                                                    100,
+                                                                )}
+                                                                %)
+                                                            </span>
+                                                        )}
+                                                </p>
+                                            </div>
+                                            <div className="text-right">
+                                                <p className="text-xs text-gray-500">
+                                                    Override detection
+                                                </p>
+                                                <div className="mt-2 flex space-x-2">
+                                                    <button
+                                                        onClick={() => {
+                                                            setDetectedSource(
+                                                                "sar",
+                                                            );
+                                                            setDetectionConfidence(
+                                                                null,
+                                                            );
+                                                        }}
+                                                        className={`px-3 py-1 text-sm rounded-lg border ${detectedSource === "sar" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-700 border-gray-300"}`}
+                                                    >
+                                                        SAR
+                                                    </button>
+                                                    <button
+                                                        onClick={() => {
+                                                            setDetectedSource(
+                                                                "aerial",
+                                                            );
+                                                            setDetectionConfidence(
+                                                                null,
+                                                            );
+                                                        }}
+                                                        className={`px-3 py-1 text-sm rounded-lg border ${detectedSource === "aerial" ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-700 border-gray-300"}`}
+                                                    >
+                                                        AERIAL
+                                                    </button>
+                                                    <button
+                                                        onClick={() => {
+                                                            setDetectedSource(
+                                                                null,
+                                                            );
+                                                            setDetectionConfidence(
+                                                                null,
+                                                            );
+                                                        }}
+                                                        className="px-3 py-1 text-sm rounded-lg border bg-white text-gray-700 border-gray-300"
+                                                    >
+                                                        CLEAR
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
                             )}
 
@@ -392,8 +497,9 @@ function App() {
                                         results
                                     </p>
                                     <p className="text-sm text-gray-400 mt-2">
-                                        Select a model and upload your satellite
-                                        image above
+                                        The AI automatically selects the
+                                        appropriate model based on the image;
+                                        upload an image above to begin.
                                     </p>
                                 </div>
                             )}
@@ -422,9 +528,7 @@ function App() {
                                         <h3 className="font-semibold text-gray-900 flex items-center">
                                             <FileImage className="h-5 w-5 mr-2 text-blue-600" />
                                             Analysis Results -{" "}
-                                            {selectedModel === "both"
-                                                ? "Both Models"
-                                                : selectedModel.toUpperCase()}
+                                            {getResultModelLabel()}
                                         </h3>
                                         <div className="border border-gray-200 rounded-lg overflow-hidden">
                                             <img
@@ -486,13 +590,16 @@ function App() {
                                             Model Information
                                         </h4>
                                         <p className="text-sm text-gray-600">
-                                            {selectedModel === "unet" &&
+                                            {getResultModelLabel() === "UNet" &&
                                                 "UNet: Excellent for precise boundary detection with efficient U-shaped architecture."}
-                                            {selectedModel === "deeplab" &&
+                                            {getResultModelLabel() ===
+                                                "DeepLabV3+" &&
                                                 "DeepLabV3+: Advanced model with dilated convolutions for improved contextual understanding."}
-                                            {selectedModel === "both" &&
+                                            {getResultModelLabel() ===
+                                                "UNet + DeepLabV3+" &&
                                                 "Comparison view showing results from both UNet and DeepLabV3+ models side by side."}
-                                            {selectedModel === "aerial" &&
+                                            {getResultModelLabel() ===
+                                                "Roboflow_Aerial" &&
                                                 "Aerial workflow visualization composed server-side from Roboflow polygons."}
                                         </p>
                                     </div>
